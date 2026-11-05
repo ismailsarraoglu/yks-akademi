@@ -1,0 +1,91 @@
+package com.yksakademi.app.ui
+
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import androidx.room.withTransaction
+import com.yksakademi.app.data.AppDatabase
+import com.yksakademi.app.data.Subject
+import com.yksakademi.app.data.Topic
+import com.yksakademi.app.data.TopicStatus
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+import java.time.LocalDate
+
+@OptIn(ExperimentalCoroutinesApi::class)
+class TopicsViewModel(app: Application) : AndroidViewModel(app) {
+
+    private val db = AppDatabase.get(app)
+    private val dao = db.topicDao()
+
+    private val _exam = MutableStateFlow("TYT")
+    val exam: StateFlow<String> = _exam.asStateFlow()
+
+    val subjects: StateFlow<List<Subject>> =
+        _exam.flatMapLatest { dao.subjects(it) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val topics: StateFlow<List<Topic>> =
+        _exam.flatMapLatest { dao.topics(it) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    fun setExam(exam: String) {
+        _exam.value = exam
+    }
+
+    fun saveTopic(topic: Topic) {
+        viewModelScope.launch {
+            if (topic.id == 0L) dao.insertTopic(topic) else dao.updateTopic(topic)
+        }
+    }
+
+    fun toggleDone(topic: Topic) {
+        val newStatus =
+            if (topic.status == TopicStatus.COMPLETED) TopicStatus.NOT_STARTED else TopicStatus.COMPLETED
+        saveTopic(
+            topic.copy(
+                status = newStatus,
+                lastStudiedDay = if (newStatus == TopicStatus.COMPLETED) LocalDate.now().toEpochDay() else topic.lastStudiedDay
+            )
+        )
+    }
+
+    fun deleteTopic(topic: Topic) {
+        viewModelScope.launch {
+            db.withTransaction {
+                dao.deleteReviewsOfTopic(topic.id)
+                dao.deleteTopic(topic)
+            }
+        }
+    }
+
+    fun addSubject(name: String) {
+        viewModelScope.launch {
+            val exam = _exam.value
+            dao.insertSubject(
+                Subject(name = name.trim(), exam = exam, orderIndex = dao.maxOrder(exam) + 1, isCustom = true)
+            )
+        }
+    }
+
+    fun renameSubject(subject: Subject, name: String) {
+        viewModelScope.launch { dao.updateSubject(subject.copy(name = name.trim())) }
+    }
+
+    fun deleteSubject(subject: Subject) {
+        viewModelScope.launch {
+            db.withTransaction {
+                dao.deleteReviewsOfSubject(subject.id)
+                dao.deleteTopicsOfSubject(subject.id)
+                dao.deleteLogsOfSubject(subject.id)
+                dao.deleteSubjectById(subject.id)
+            }
+        }
+    }
+}

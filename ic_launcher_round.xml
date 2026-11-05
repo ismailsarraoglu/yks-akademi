@@ -1,0 +1,105 @@
+package com.yksakademi.app.ui
+
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Assessment
+import androidx.compose.material.icons.rounded.Home
+import androidx.compose.material.icons.rounded.MenuBook
+import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Timer
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavGraph.Companion.findStartDestination
+import androidx.navigation.NavHostController
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.navigation.compose.rememberNavController
+import com.yksakademi.app.ui.screens.HomeScreen
+import com.yksakademi.app.ui.screens.PlaceholderScreen
+import com.yksakademi.app.ui.screens.QuestionsScreen
+import com.yksakademi.app.ui.screens.SettingsScreen
+import com.yksakademi.app.ui.screens.TopicsScreen
+
+private data class Tab(val route: String, val label: String, val icon: ImageVector)
+
+private val tabs = listOf(
+    Tab(Routes.HOME, "Ana Sayfa", Icons.Rounded.Home),
+    Tab(Routes.TOPICS, "Konular", Icons.Rounded.MenuBook),
+    Tab(Routes.TIMER, "Süre", Icons.Rounded.Timer),
+    Tab(Routes.EXAMS, "Deneme", Icons.Rounded.Assessment),
+    Tab(Routes.SETTINGS, "Ayarlar", Icons.Rounded.Settings)
+)
+
+private fun NavHostController.navigateTo(route: String) {
+    navigate(route) {
+        popUpTo(graph.findStartDestination().id) { saveState = true }
+        launchSingleTop = true
+        restoreState = true
+    }
+}
+
+@Composable
+fun YksAppRoot(vm: MainViewModel) {
+    val navController = rememberNavController()
+    val backStackEntry by navController.currentBackStackEntryAsState()
+    val currentRoute = backStackEntry?.destination?.route
+    val tabRoutes = tabs.map { it.route }
+    val implemented = listOf(Routes.TOPICS, Routes.QUESTIONS)
+
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        bottomBar = {
+            if (currentRoute == null || currentRoute in tabRoutes) {
+                NavigationBar {
+                    tabs.forEach { tab ->
+                        NavigationBarItem(
+                            selected = currentRoute == tab.route,
+                            onClick = { navController.navigateTo(tab.route) },
+                            icon = { Icon(tab.icon, contentDescription = tab.label) },
+                            label = { Text(tab.label, maxLines = 1) }
+                        )
+                    }
+                }
+            }
+        }
+    ) { padding ->
+        NavHost(
+            navController = navController,
+            startDestination = Routes.HOME,
+            modifier = Modifier.padding(padding)
+        ) {
+            composable(Routes.HOME) {
+                HomeScreen(vm = vm, onNavigate = { route ->
+                    if (route in tabRoutes) navController.navigateTo(route) else navController.navigate(route)
+                })
+            }
+            composable(Routes.SETTINGS) { SettingsScreen(vm) }
+            composable(Routes.TOPICS) {
+                val topicsVm: TopicsViewModel = viewModel()
+                TopicsScreen(topicsVm)
+            }
+            composable(Routes.QUESTIONS) {
+                val questionsVm: QuestionsViewModel = viewModel()
+                QuestionsScreen(questionsVm, onBack = { navController.popBackStack() })
+            }
+            quickAccessModules.filter { it.route !in implemented }.forEach { module ->
+                composable(module.route) {
+                    PlaceholderScreen(
+                        module = module,
+                        onBack = if (module.route in tabRoutes) null else { { navController.popBackStack() } }
+                    )
+                }
+            }
+        }
+    }
+}

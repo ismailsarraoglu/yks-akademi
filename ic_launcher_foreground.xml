@@ -1,0 +1,135 @@
+package com.yksakademi.app.ui
+
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.yksakademi.app.data.AppDatabase
+import com.yksakademi.app.data.QuestionLog
+import com.yksakademi.app.data.Subject
+import com.yksakademi.app.data.SubjectTotals
+import com.yksakademi.app.data.Totals
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.time.LocalDate
+
+@OptIn(ExperimentalCoroutinesApi::class)
+class QuestionsViewModel(app: Application) : AndroidViewModel(app) {
+
+    private val db = AppDatabase.get(app)
+    private val qDao = db.questionDao()
+    private val tDao = db.topicDao()
+    private val mutex = Mutex()
+
+    val today: Long = LocalDate.now().toEpochDay()
+
+    private fun <T> Flow<T>.state(initial: T): StateFlow<T> =
+        stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), initial)
+
+    // ---------- Giriş sekmesi ----------
+    private val _exam = MutableStateFlow("TYT")
+    val exam: StateFlow<String> = _exam.asStateFlow()
+
+    private val _day = MutableStateFlow(today)
+    val day: StateFlow<Long> = _day.asStateFlow()
+
+    val coefficient: StateFlow<Double> =
+        db.profileDao().observe().map { it?.wrongCoefficient ?: 0.25 }.state(0.25)
+
+    val subjects: StateFlow<List<Subject>> =
+        _exam.flatMapLatest { tDao.subjects(it) }.state(emptyList())
+
+    val logs: StateFlow<List<QuestionLog>> =
+        _day.flatMapLatest { qDao.logsOn(it) }.state(emptyList())
+
+    fun setExam(exam: String) {
+        _exam.value = exam
+    }
+
+    fun shiftDay(delta: Int) {
+        val next = _day.value + delta
+        if (next <= today) _day.value = next
+    }
+
+    /** field: 0 = doğru, 1 = yanlış, 2 = boş */
+    fun adjust(subjectId: Long, field: Int, delta: Int) {
+        viewModelScope.launch {
+            mutex.withLock {
+                val d = _day.value
+                val cur = qDao.find(subjectId, d) ?: QuestionLog(subjectId = subjectId, day = d)
+                val upd = when (field) {
+                    0 -> cur.copy(correct = (cur.correct + delta).coerceAtLeast(0))
+                    1 -> cur.copy(wrong = (cur.wrong + delta).coerceAtLeast(0))
+                    else -> cur.copy(empty = (cur.empty + delta).coerceAtLeast(0))
+                }
+                qDao.save(upd)
+            }
+        }
+    }
+
+    fun addBulk(subjectId: Long, correct: Int, wrong: Int, empty: Int) {
+        viewModelScope.launch {
+            mutex.withLock {
+                val d = _day.value
+                val cur = qDao.find(subjectId, d) ?: QuestionLog(subjectId = subjectId, day = d)
+                qDao.save(
+                    cur.copy(
+                        correct = cur.correct + correct,
+                        wrong = cur.wrong + wrong,
+                        empty = cur.empty + empty
+                    )
+                )
+            }
+        }
+    }
+
+    // ---------- İstatistik sekmesi ----------
+    private val emptyTotals = Totals(0, 0, 0)
+
+    /** 0 = bugün, 1 = son 7 gün, 2 = son 30 gün, 3 = toplam */
+    private val _range = MutableStateFlow(0)
+    val range: StateFlow<Int> = _range.asStateFlow()
+
+    fun setRange(index: Int) {
+        _range.value = index
+    }
+
+    val totalsList: StateFlow<List<Totals>> =
+        combine(
+            qDao.totals(today, today),
+            qDao.totals(today - 6, today),
+            qDao.totals(today - 29, today),
+            qDao.totals(0, today)
+        ) { a, b, c, d -> listOf(a, b, c, d) }
+            .state(List(4) { emptyTotals })
+
+    val bySubject: StateFlow<List<SubjectTotals>> =
+        _range.flatMapLatest { r ->
+            val from = when (r) {
+                0 -> today
+                1 -> today - 6
+                2 -> today - 29
+                else -> 0L
+            }
+            qDao.bySubject(from, today)
+        }.state(emptyList())
+
+    val allSubjects: StateFlow<List<Subject>> = qDao.allSubjects().state(emptyList())
+
+    /** Son 14 günün günlük toplam soru sayısı, eskiden yeniye. */
+    val last14: StateFlow<List<Int>> =
+        qDao.byDay(today - 13, today).map { list ->
+            val byDay = list.associate { it.day to it.total }
+            (0..13).map { i -> byDay[today - 13 + i] ?: 0 }
+        }.state(List(14) { 0 })
+}
